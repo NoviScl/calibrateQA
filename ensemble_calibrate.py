@@ -7,7 +7,7 @@ from tqdm import tqdm
 import torch
 from sklearn.linear_model import LogisticRegression
 import pickle
-import csv
+from collections import Counter
 
 import re 
 import string
@@ -152,15 +152,6 @@ def instance_ECE(all_scores, all_probs):
         return 0
     return total_error / len(all_probs) * 100
 
-def brier_score(all_scores, all_probs):
-    # compute Brier Score
-    total_error = 0
-    for i in range(len(all_probs)):
-        total_error += (all_scores[i] - all_probs[i])**2 
-    if len(all_scores) == 0:
-        return 0
-    return total_error / len(all_probs) * 100
-
 def category_ECE(all_scores, all_probs):
     # compute the average of positive-example-ECE and negative-example-ECE
     pos_probs = []
@@ -188,7 +179,7 @@ def cross_entropy(output, target):
 
 class Calibrator:
     def __init__(self, score_func=2, answer_agg=False, prob="softmax", pipeline=False, printing=True, reranking=False, match_ans=False, bart=False, \
-            ece_type="interval", task="qa", buckets=10):
+            ece_type="interval", task="qa"):
         self.dev_set = None 
         self.test_set = None 
         self.score_func = score_func # {1, 2, 3}
@@ -226,7 +217,6 @@ class Calibrator:
         self.test_top_scores = []
         self.test_top_probs = []
         self.test_top_idxes = []
-        self.buckets = buckets
     
     def load_dev(self, data_dir="all_predictions_dev.json"):
         with open(data_dir, "r") as f:
@@ -617,19 +607,11 @@ class Calibrator:
             self.test_top_probs, self.test_top_scores, self.test_top_idxes = self.extract_top_span(self.test_logits, self.test_scores, temperature=self.temperature)
 
         # ## avg calibration
-        # self.test_top_probs = [0.3634] * len(self.test_top_probs)
+        # self.test_top_probs = [np.mean(self.test_top_scores)] * len(self.test_top_probs)
         # print ("test top probs: ", self.test_top_probs[:20])
 
-        ## dev 
-        # nq joint: 35.75
-        # nq pipeline: 36.34 
-
         # ## 0/1 calibration
-        ## hotpotqa dev joint: 25.41
-        ## hotpotqa dev pipeline: 24.59
-
         # acc = np.mean(self.test_top_scores)
-        # acc = 36.34 / 100
         # sorted_probs = sorted(self.test_top_probs)[::-1]
         # threshold = sorted_probs[int(len(self.test_top_probs) * acc)]
         # new_test_top_probs = []
@@ -640,12 +622,6 @@ class Calibrator:
         #         new_test_top_probs.append(0)
         # self.test_top_probs = new_test_top_probs
         # print ("threshold: ", threshold)
-        # print ("test top probs: ", self.test_top_probs[:20])
-
-        ## random calibration
-        # self.test_top_probs = [] 
-        # for i in range(len(self.test_top_scores)):
-        #     self.test_top_probs.append(np.random.uniform())
         # print ("test top probs: ", self.test_top_probs[:20])
 
     def dev_ece(self):
@@ -681,7 +657,7 @@ class Calibrator:
     def test_ece(self):
     
         if "interval" in self.ece_type:
-            per_bucket_score, per_bucket_confidence, bucket_sizes = get_bucket_scores_and_confidence(self.test_top_scores, self.test_top_probs, buckets=self.buckets)
+            per_bucket_score, per_bucket_confidence, bucket_sizes = get_bucket_scores_and_confidence(self.test_top_scores, self.test_top_probs)
             ece = ECE(per_bucket_score, per_bucket_confidence, bucket_sizes)
         
             if self.printing:
@@ -695,7 +671,7 @@ class Calibrator:
                 print ()
         
         if "density" in self.ece_type:
-            per_bucket_score, per_bucket_confidence, bucket_sizes = get_bucket_scores_and_confidence_by_density(self.test_top_scores, self.test_top_probs, buckets=self.buckets)
+            per_bucket_score, per_bucket_confidence, bucket_sizes = get_bucket_scores_and_confidence_by_density(self.test_top_scores, self.test_top_probs)
             ece = ECE(per_bucket_score, per_bucket_confidence, bucket_sizes)
         
             if self.printing:
@@ -987,7 +963,7 @@ class Calibrator:
 
         
 
-def calibrator_eval(calibrator):
+def eval(calibrator):
     calibrator.load_dev(data_dir="/data3/private/clsi/OpenQA/AmbigQA/out/bart_nq/all_predictions_dev_beam5.json")
     calibrator.load_test(data_dir="/data3/private/clsi/OpenQA/AmbigQA/out/bart_nq/all_predictions_test_beam5.json")
     calibrator.top_span_dev()
@@ -997,18 +973,11 @@ def calibrator_eval(calibrator):
     # calibrator.test_ece_one_correct()
     # calibrator.test_ece_more_correct()
 
-def search(calibrator, dev_dir=None, test_dir=None):
+def search(calibrator):
     # calibrator.load_dev(data_dir="/data3/private/clsi/OpenQA/AmbigQA/out/bart_nq/all_predictions_dev_beam5.json")
     # calibrator.load_test(data_dir="/data3/private/clsi/OpenQA/AmbigQA/out/bart_nq/all_predictions_test_beam5.json")
-    # calibrator.load_dev(data_dir="/data3/private/clsi/OpenQA/AmbigQA/out/reader_nq_new_em/all_predictions_dev_alpha09.json")
-    # calibrator.load_test(data_dir="/data3/private/clsi/OpenQA/AmbigQA/out/reader_nq_new_em/all_predictions_test_alpha09.json")
-    
-    # calibrator.load_dev(data_dir="/data3/private/clsi/OpenQA/AmbigQA/out/reader_nq_new_em/all_checkpoints_17ckpts/all_predictions_dev_ckpt102000.json")
-    # calibrator.load_test(data_dir="/data3/private/clsi/OpenQA/AmbigQA/out/reader_nq_new_em/all_checkpoints_17ckpts/all_predictions_test_ckpt102000.json")
-    
-    calibrator.load_dev(dev_dir)
-    calibrator.load_test(test_dir)
-    
+    calibrator.load_dev(data_dir="/data3/private/clsi/OpenQA/AmbigQA/out/reader_nq_new_em/all_predictions_dev_alpha09.json")
+    calibrator.load_test(data_dir="/data3/private/clsi/OpenQA/AmbigQA/out/reader_nq_new_em/all_predictions_test_alpha09.json")
     calibrator.printing = False
     calibrator.search_temperature()
 
@@ -1016,180 +985,88 @@ def search(calibrator, dev_dir=None, test_dir=None):
     # calibrator.test_ece_one_correct()
     # calibrator.test_ece_more_correct()
 
+def most_frequent(List):
+    occurence_count = Counter(List)
+    return occurence_count.most_common(1)[0][0]
+
 if __name__ == "__main__":
-    test_dir = "/data3/private/clsi/OpenQA/AmbigQA/out/reader_nq_new_em/all_checkpoints_ls/all_predictions_test_ckpt96000.json"
-    calibrator = Calibrator(score_func=2, answer_agg=False, pipeline=False, prob="softmax", printing=True, ece_type=["interval", "density", "instance", "category"], task="qa", buckets=10)
-    calibrator.load_test(data_dir=test_dir)
-    calibrator.top_span_test()
+    # all_dirs = ["/data3/private/clsi/OpenQA/AmbigQA/out/reader_nq_new_em/all_checkpoints_17ckpts/all_predictions_test_ckpt102000.json", \
+    #     "/data3/private/clsi/OpenQA/AmbigQA/out/reader_nq_new_em/all_checkpoints_8ckpts/all_predictions_test_ckpt96k.json", \
+    #     "/data3/private/clsi/OpenQA/AmbigQA/out/reader_nq_new_em/all_checkpoints_seed120/all_predictions_test_ckpt96000.json", \
+    #     "/data3/private/clsi/OpenQA/AmbigQA/out/reader_nq_new_em/all_checkpoints_seed2022/all_predictions_test_ckpt96000.json", \
+    #     "/data3/private/clsi/OpenQA/AmbigQA/out/reader_nq_new_em/all_checkpoints_seed996/all_predictions_test_ckpt96000.json"]
+
+    # all_dirs = ["/data3/private/clsi/OpenQA/AmbigQA/out/reader_hotpotqa/all_predictions_17ckpts/all_predictions_test_ckpt102000.json", \
+    #     "/data3/private/clsi/OpenQA/AmbigQA/out/reader_hotpotqa/all_predictions_8ckpts/all_predictions_test_ckpt96000.json", \
+    #     "/data3/private/clsi/OpenQA/AmbigQA/out/reader_hotpotqa/all_predictions_seed120/all_predictions_test_ckpt96000.json", \
+    #     "/data3/private/clsi/OpenQA/AmbigQA/out/reader_hotpotqa/all_predictions_seed2022/all_predictions_test_ckpt96000.json", \
+    #     "/data3/private/clsi/OpenQA/AmbigQA/out/reader_hotpotqa/all_predictions_seed996/all_predictions_test_ckpt96000.json"]
+
+    all_dirs = ["/data3/private/clsi/OpenQA/AmbigQA/out/reader_nq_new_em/all_checkpoints_17ckpts/all_predictions_test_ckpt102000.json", \
+        "/data3/private/clsi/OpenQA/AmbigQA/out/reader_nq_new_em/all_checkpoints_17ckpts/all_predictions_test_ckpt96000.json", \
+        "/data3/private/clsi/OpenQA/AmbigQA/out/reader_nq_new_em/all_checkpoints_17ckpts/all_predictions_test_ckpt72000.json", \
+        "/data3/private/clsi/OpenQA/AmbigQA/out/reader_nq_new_em/all_checkpoints_17ckpts/all_predictions_test_ckpt48000.json", \
+        "/data3/private/clsi/OpenQA/AmbigQA/out/reader_nq_new_em/all_checkpoints_17ckpts/all_predictions_test_ckpt24000.json"]
+
+
+    all_top_spans = []
+    all_top_scores = []
+    all_top_probs = []
+    for data_dir in tqdm(all_dirs):
+        calibrator = Calibrator(score_func=2, answer_agg=False, pipeline=False, prob="softmax", printing=True, ece_type=["interval", "density", "instance", "category"], task="qa")
+        calibrator.load_dev(data_dir=data_dir)
+        calibrator.top_span_dev()
+        all_spans = calibrator.dev_spans
+        top_idxes = calibrator.dev_top_idxes
+        top_spans = []
+        for ii,idx in enumerate(top_idxes):
+            top_spans.append(normalize_answer(all_spans[ii][idx]))
+        
+        all_top_spans.append(top_spans)
+        all_top_scores.append(calibrator.dev_top_scores)
+        all_top_probs.append(calibrator.dev_top_probs)
+
+    new_probs = []
+    new_scores = []
+    for i in range(len(all_top_spans[0])):
+        candidates = [spans[i] for spans in all_top_spans]
+        scores = [scores[i] for scores in all_top_scores]
+        probs = [probs[i] for probs in all_top_probs]
+
+        ## take majority vote
+        ans = most_frequent(candidates)
+        score = 0
+        confs = 0
+        counts = 0
+        for j in range(len(candidates)):
+            if candidates[j] == ans:
+                counts += 1
+                score = scores[j]
+                confs += probs[j]
+        
+        # confs = confs / counts ## average confs
+        # new_probs.append(confs)
+
+        if counts >= 3:
+            confs = 1
+        else:
+            confs = 0
+
+        # confs = counts / 5
+
+        new_scores.append(score)
+        new_probs.append(confs)
+        
+    
+
+    print ("After Consistency Calibration: ")
+    calibrator.test_top_scores = new_scores
+    calibrator.test_top_probs = new_probs
     calibrator.test_ece()
 
 
-
-    # with open("/home/sichenglei/LM-BFF/result/sst2_rbt_base_dev_preds.pkl", "rb") as f:
-    #     preds = pickle.load(f)
     
-    # with open("/home/sichenglei/LM-BFF/data/all_data_final/SST-2/full/dev.tsv", "r") as f:
-    #     data = f.readlines()
-    # labels = [int(line.split('\t')[1]) for line in data[1:]]
 
-    # dev_logits = []
-    # dev_scores = []
-    # for i in range(len(preds)):
-    #     dev_logits.append(list(preds[i]))
-    #     if labels[i] == 0:
-    #         dev_scores.append([1,0])
-    #     else:
-    #         dev_scores.append([0,1])
-
-    # # calibrator = Calibrator(score_func = 2, pipeline=False, printing=True, ece_type="category", task="sst2")
-    # calibrator = Calibrator(score_func=2, answer_agg=False, pipeline=True, prob="softmax", printing=True, ece_type=["interval", "density", "instance", "category"], task="sst-2", buckets=10)
-    # calibrator.test_logits = dev_logits
-    # calibrator.test_scores = dev_scores
-    # calibrator.temperature = 2.24
-    # calibrator.top_span_test()
-    # calibrator.test_ece()
-
-    # calibrator.printing = False
-    # calibrator.search_temperature()
-
-    # with open("/home/sichenglei/LM-BFF/result/sst2_rbt_base_preds.pkl", "rb") as f:
-    #     preds = pickle.load(f)
-    
-    # with open("/home/sichenglei/LM-BFF/data/all_data_final/SST-2/full/test.tsv", "r") as f:
-    #     data = f.readlines()
-    # labels = [int(line[0]) for line in data]
-
-    # dev_logits = []
-    # dev_scores = []
-    # for i in range(len(preds)):
-    #     dev_logits.append(list(preds[i]))
-    #     if labels[i] == 0:
-    #         dev_scores.append([1,0])
-    #     else:
-    #         dev_scores.append([0,1])
-    
-    # calibrator.test_logits = dev_logits
-    # calibrator.test_scores = dev_scores
-
-    # calibrator.temperature = 1.0
-    # calibrator.top_span_test()
-    # calibrator.test_ece()
-    # print (calibrator.dev_top_probs[:10])
-
-    # calibrator.temperature = 2.24
-    # calibrator.top_span_test()
-    # calibrator.test_ece()
-    # # print (calibrator.dev_top_probs[:10])
+  
 
 
-    # for prob in ["softmax", "sigmoid"]:
-    #     for agg in [False, True]:
-    #         print (agg, prob)
-    #         calibrator = Calibrator(score_func=3, answer_agg=agg, pipeline=False, prob=prob, printing=True, ece_type=["interval", "density", "instance", "category"], task="qa")
-    #         calibrator.temperature = 1.0
-    #         calibrator.load_test(data_dir="/data3/private/clsi/calibration/nq_calibrate/nq_model_all_predictions_nq_test.json")
-    #         calibrator.top_span_test()
-    #         calibrator.test_ece()
-    
-    # search(calibrator)
-    # calibrator.top_span_test()
-    # calibrator.test_ece()
-
-
-    # nq_preds = np.argsort(calibrator.test_top_probs)
-
-
-    # logfile = "/home/sichenglei/PromptQA/logs/calibration/triviaqa_probs_code002_16shot.log"
-
-    # with open(logfile, "r") as f:
-    #     lines = f.readlines()
-
-    # questions = []
-    # golds = []
-    # ems = []
-    # f1s = []
-    # predictions = []
-    # pos = 0
-    # probs = []
-
-    # prefix = len("Gold answer:  ['")
-    # for i in range(len(lines)):
-    #     if "Gold answer:  " in lines[i]:
-    #         # question = lines[i - 3].strip()
-    #         # em = float(lines[i + 3].split()[1])
-    #         # f1 = lines[i + 4].split()[1]
-    #         # gold = lines[i][13 : ].strip()
-    #         # pred = lines[i - 2].split()[1 : ]
-    #         # pred = ' '.join(pred)
-            
-    #         # questions.append(question)
-    #         # golds.append(gold)
-    #         # ems.append(em)
-    #         # f1s.append(f1)
-    #         # predictions.append(pred)
-    #         # prob = float(lines[i + 2].split()[1].strip())
-    #         # probs.append(prob)
-
-    #         ## for self-con
-    #         # em = float(lines[i + 1].split()[1])
-    #         # prob = float(lines[i - 1].split()[-1].strip())
-            
-    #         ## for few-shot
-    #         em = float(lines[i + 3].split()[1])
-    #         token_probs = eval(' '.join(lines[i + 1].split()[1 : ]))
-    #         token_probs = [np.log2(p) for p in token_probs]
-    #         prob = np.exp(np.mean(token_probs))
-    #         # prob = float(lines[i + 2].split()[1].strip())
-            
-    #         ems.append(em)
-    #         probs.append(prob)
-
-    # calibrator.test_top_scores = ems 
-    # calibrator.test_top_probs = probs 
-    # calibrator.test_ece()
-
-    # probs = calibrator.test_top_probs
-    # ems = calibrator.test_top_scores
-    
-    # sorted_prob = np.argsort(probs)[::-1]
-    # portion = len(probs) // 10
-    # for i in range(10):
-    #     ems_ = []
-    #     for j in sorted_prob[ : portion * (i+1)]:
-    #         ems_.append(ems[j])
-    #     print ("proportion: ", (i+1) * 10)
-    #     print ("EM: ", np.mean(ems_))
-
-    # print (len(ems))
-    # print (len(probs))
-
-    # ten_percent = len(questions) // 5
-
-    # for j in range(5):
-    #     top_em = 0
-    #     top_f1 = 0
-    #     for i in nq_preds[ j * ten_percent : (j+1) * ten_percent]:
-    #         top_em += float(ems[i])
-    #         top_f1 += float(f1s[i])
-
-    #     print ("EM: ", top_em / ten_percent)
-    # print ("F1: ", top_f1 / ten_percent)
-
-
-    # with open("/home/sichenglei/LM-BFF/nq_preds", "rb") as f:
-    #     nq_preds = pickle.load(f)
-
-    # nq_preds = [p[1] for p in nq_preds]
-    # nq_preds = np.argsort(nq_preds)
-    # print (len(nq_preds))
-
-    # ten_percent = len(nq_preds) // 10 
-    # print ("#top egs: ", ten_percent)
-    
-    # top_em = 0
-    # for i in nq_preds[ : ten_percent ]:
-    #     top_em += float(calibrator.test_top_scores[i])
-
-    # print ("EM: ", top_em / ten_percent)
-
-   
